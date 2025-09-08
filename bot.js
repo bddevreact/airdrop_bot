@@ -198,7 +198,7 @@ function buildContestBlock() {
   const pr      = loadProgress();
   const percent = Math.min((pr.totalSol / PROGRESS_SOL_CAP) * 100, 100);
   return (
-`*Contest Progress*
+`Contest Progress
 • Total Spent: *${pr.totalSol.toFixed(4)} / ${PROGRESS_SOL_CAP} SOL*
 • ${makeProgressBar(percent)} ${percent.toFixed(2)}%
 • ⏳ Time left: ${formatTimeLeft()}`

@@ -1,0 +1,20 @@
+{
+  "botToken": "7580676982:AAFC6HMWe5gVhbTM8YBvPyH06seNF9UPEe8",
+  "motherWallet": "DrgxvHQb9DzgBG5YkP8FyeFAbJp2M54XTzuubt3QfDZP",
+  "rate": 7000,
+  "minDeposit": 0.2,
+  "groupid": -1002247674621,
+  "adminIds": [
+    8170459913
+  ],
+  "progressSolCap": 100,
+  "presaleStart": 1757203200,
+  "presaleEnd": 1759143600,
+  "loopSeconds": 120,
+  "tokenMint": "9FwBttHVkmTGECS8oveN26RTQYS4pjbyKf4K3C1jJZ7o",
+  "seed": "YourBase58PrivateKeyHere",
+  "rpcUrl": "https://api.mainnet-beta.solana.com",
+  "apiKey": "d0142e24-6fec-42c0-9884-f20a8ee80dd4",
+  "explorer": "https://solscan.io",
+  "dbPath": "airdrop.db"
+}

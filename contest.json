@@ -1,0 +1,60 @@
+{
+  "totalSol": 37.8439,
+  "bigSpenders": [
+    {
+      "wallet": "DrgxvHQb9DzgBG5YkP8FyeFAbJp2M54XTzuubt3QfDZP",
+      "amount": 5,
+      "ts": 1757268754
+    },
+    {
+      "wallet": "pq36tEvDpZJZvo18FwNTXuAXNEmytkkdvbSxqYfp9Mz",
+      "amount": 1,
+      "ts": 1757281269
+    },
+    {
+      "wallet": "EnAubNWxp8GosArDxjtN4nWpRadunM1tAuyF9ZsEdN4V",
+      "amount": 1,
+      "ts": 1757313386
+    },
+    {
+      "wallet": "HnWpVosnQ8G2HcDBvi3HtJ3SfF3D6K1pqzDXmTf4uvif",
+      "amount": 5,
+      "ts": 1757313387
+    },
+    {
+      "wallet": "5tzFkiKscXHK5ZXCGbXZxdw7gTjjD1mBwuoFbhUvuAi9",
+      "amount": 1,
+      "ts": 1757313389
+    },
+    {
+      "wallet": "9avXkQNvDGqiViHaoLFjQH6Hb1uE1mr5y585KPSamvfB",
+      "amount": 5.2995,
+      "ts": 1757313390
+    },
+    {
+      "wallet": "9NCGSZqMYRSeKiJJBhZsKWQZsNjKY9haVNvSFW9WhNR",
+      "amount": 1.989,
+      "ts": 1757313392
+    },
+    {
+      "wallet": "EnAubNWxp8GosArDxjtN4nWpRadunM1tAuyF9ZsEdN4V",
+      "amount": 1,
+      "ts": 1757316280
+    },
+    {
+      "wallet": "HnWpVosnQ8G2HcDBvi3HtJ3SfF3D6K1pqzDXmTf4uvif",
+      "amount": 5,
+      "ts": 1757316281
+    },
+    {
+      "wallet": "5tzFkiKscXHK5ZXCGbXZxdw7gTjjD1mBwuoFbhUvuAi9",
+      "amount": 1,
+      "ts": 1757316286
+    },
+    {
+      "wallet": "9avXkQNvDGqiViHaoLFjQH6Hb1uE1mr5y585KPSamvfB",
+      "amount": 5.2995,
+      "ts": 1757316287
+    }
+  ]
+}

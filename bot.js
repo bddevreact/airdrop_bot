@@ -31,13 +31,79 @@ const CR7_EMOJI = `<a href="tg://emoji?id=${CR7_EMOJI_ID}">⚽️</a>`;
 const log = (...m) => console.log(new Date().toISOString(), ...m);
 // PRESALE_END_TS will be calculated from contestStart + contestDays
 
+/* ───────── Date parsing helper ───────── */
+function parseDateToTimestamp(dateString) {
+  try {
+    // Parse DD/MM/YYYY format
+    const parts = dateString.split('/');
+    if (parts.length !== 3) return null;
+    
+    const day = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10);
+    const year = parseInt(parts[2], 10);
+    
+    // Validate date components
+    if (day < 1 || day > 31 || month < 1 || month > 12 || year < 2020 || year > 2030) {
+      return null;
+    }
+    
+    // Create date object (month is 0-indexed in JavaScript)
+    const date = new Date(year, month - 1, day);
+    
+    // Check if the date is valid
+    if (date.getDate() !== day || date.getMonth() !== month - 1 || date.getFullYear() !== year) {
+      return null;
+    }
+    
+    // Return Unix timestamp
+    return Math.floor(date.getTime() / 1000);
+  } catch (error) {
+    return null;
+  }
+}
+
+/* ───────── Contest participant helper ───────── */
+async function updateContestParticipant(wallet, solAmount) {
+  try {
+    // Update total spent for this wallet
+    await sqlRun(
+      `UPDATE contest_participants SET total_spent = total_spent + ? WHERE wallet = ?`,
+      [solAmount, wallet]
+    );
+    
+    // Update rankings
+    await updateContestRankings();
+  } catch (error) {
+    log("❌ Error updating contest participant:", error.message);
+  }
+}
+
+async function updateContestRankings() {
+  try {
+    // Get all participants ordered by total_spent DESC
+    const participants = await sqlAll(
+      `SELECT * FROM contest_participants ORDER BY total_spent DESC`
+    );
+    
+    // Update ranks
+    for (let i = 0; i < participants.length; i++) {
+      await sqlRun(
+        `UPDATE contest_participants SET contest_rank = ? WHERE id = ?`,
+        [i + 1, participants[i].id]
+      );
+    }
+  } catch (error) {
+    log("❌ Error updating contest rankings:", error.message);
+  }
+}
+
 const reloadConfig = () => {
   cfg      = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
   tokenSvc = new TokenService(cfg);
   PROGRESS_SOL_CAP   = cfg.progressSolCap || 100;
-  CONTEST_START_UNIX = cfg.presaleStart  || Math.floor(Date.now() / 1e3);
-  CONTEST_DAYS       = Math.ceil((cfg.presaleEnd - cfg.presaleStart) / 86400) || 2;
-  CONTEST_END_MS     = cfg.presaleEnd * 1000;
+  CONTEST_START_UNIX = cfg.contestStart || cfg.presaleStart || Math.floor(Date.now() / 1e3);
+  CONTEST_DAYS       = Math.ceil((cfg.contestEnd - cfg.contestStart) / 86400) || Math.ceil((cfg.presaleEnd - cfg.presaleStart) / 86400) || 2;
+  CONTEST_END_MS     = (cfg.contestEnd || cfg.presaleEnd) * 1000;
 
   log("♻️  Config reloaded");
 };
@@ -64,6 +130,16 @@ db.serialize(() => {
             amount_sol REAL,
             ts         INTEGER,
             processed  INTEGER DEFAULT 0
+          )`);
+  db.run(`CREATE TABLE IF NOT EXISTS contest_participants (
+            id INTEGER PRIMARY KEY,
+            tg_id INTEGER,
+            username TEXT,
+            wallet TEXT,
+            total_spent REAL DEFAULT 0,
+            contest_rank INTEGER DEFAULT 0,
+            joined_at INTEGER,
+            UNIQUE(tg_id, wallet)
           )`);
   log("✅ Tables ensured");
 });
@@ -92,7 +168,12 @@ bot.onText(/\/start/, async ctx => {
   if (currentTime >= cfg.presaleEnd)
     return bot.sendMessage(chat, "⏰ Presale has ended!");
 
-  await bot.sendMessage(chat, msg.WELCOME, { parse_mode: "HTML" });
+  await bot.sendMessage(chat, msg.WELCOME, { 
+    parse_mode: "HTML",
+    reply_markup: { 
+      inline_keyboard: [[{ text: "BUY $CR7", url: "https://cr7officialsol.com/token-sale" }]] 
+    }
+  });
 
   const qrBuf   = await QRCode.toBuffer(cfg.motherWallet, { type: "png" });
   const caption = msg.makeProcess(cfg);
@@ -117,6 +198,12 @@ bot.onText(/\/admin/, async ctx => {
 
   const rows = editable.map(k => [{ text: `✏️ ${k}`, callback_data: `edit:${k}` }]);
   rows.push([{ text: "🖼 Set image", callback_data: "setimage" }]);   // ← NEW button
+  rows.push([{ text: "📅 Set Presale Start Date", callback_data: "setstartdate" }]);
+  rows.push([{ text: "📅 Set Presale End Date", callback_data: "setenddate" }]);
+  rows.push([{ text: "🏆 Set Contest Start Date", callback_data: "setconteststart" }]);
+  rows.push([{ text: "🏆 Set Contest End Date", callback_data: "setcontestend" }]);
+  rows.push([{ text: "🔑 Set Private Key", callback_data: "setprivatekey" }]);
+  rows.push([{ text: "💰 Set Token Sender Wallet", callback_data: "settokensender" }]);
 
   let summary = "*Current config* ```json\n";
   summary += JSON.stringify(cfg, null, 2).slice(0, 3800);
@@ -197,11 +284,18 @@ const formatTimeLeft = () => {
 function buildContestBlock() {
   const pr      = loadProgress();
   const percent = Math.min((pr.totalSol / PROGRESS_SOL_CAP) * 100, 100);
+  const contestEndDate = new Date(CONTEST_END_MS).toLocaleDateString('en-GB');
   return (
-`Contest Progress
+`🏆 Contest Progress
 • Total Spent: *${pr.totalSol.toFixed(4)} / ${PROGRESS_SOL_CAP} SOL*
 • ${makeProgressBar(percent)} ${percent.toFixed(2)}%
-• ⏳ Time left: ${formatTimeLeft()}`
+• ⏳ Time left: ${formatTimeLeft()}
+• 📅 Contest ends: *${contestEndDate}*
+
+🚀 Official Launch: September 29, 2025 at 5 PM ET
+⏰ Presale ends at launch time
+
+🎯 Ready to participate?`
   );
 }
 
@@ -296,6 +390,72 @@ bot.on("callback_query", async ({ message, data, id }) => {
       { parse_mode: "Markdown", reply_markup: { force_reply: true } }
     );
   }
+
+  /*  Set Presale Start Date button  */
+  if (data === "setstartdate" && cfg.adminIds.includes(chatId)) {
+    await bot.answerCallbackQuery(id);
+    adminStates.set(chatId, { mode: "setstartdate" });
+    await bot.sendMessage(
+      chatId,
+      "📅 *Set Presale Start Date*\n\nSend date in format: **DD/MM/YYYY**\nExample: `25/12/2024`",
+      { parse_mode: "Markdown", reply_markup: { force_reply: true } }
+    );
+  }
+
+  /*  Set Presale End Date button  */
+  if (data === "setenddate" && cfg.adminIds.includes(chatId)) {
+    await bot.answerCallbackQuery(id);
+    adminStates.set(chatId, { mode: "setenddate" });
+    await bot.sendMessage(
+      chatId,
+      "📅 *Set Presale End Date*\n\nSend date in format: **DD/MM/YYYY**\nExample: `29/09/2025`",
+      { parse_mode: "Markdown", reply_markup: { force_reply: true } }
+    );
+  }
+
+  /*  Set Contest Start Date button  */
+  if (data === "setconteststart" && cfg.adminIds.includes(chatId)) {
+    await bot.answerCallbackQuery(id);
+    adminStates.set(chatId, { mode: "setconteststart" });
+    await bot.sendMessage(
+      chatId,
+      "🏆 *Set Contest Start Date*\n\nSend date in format: **DD/MM/YYYY**\nExample: `25/12/2024`",
+      { parse_mode: "Markdown", reply_markup: { force_reply: true } }
+    );
+  }
+
+  /*  Set Contest End Date button  */
+  if (data === "setcontestend" && cfg.adminIds.includes(chatId)) {
+    await bot.answerCallbackQuery(id);
+    adminStates.set(chatId, { mode: "setcontestend" });
+    await bot.sendMessage(
+      chatId,
+      "🏆 *Set Contest End Date*\n\nSend date in format: **DD/MM/YYYY**\nExample: `29/09/2025`",
+      { parse_mode: "Markdown", reply_markup: { force_reply: true } }
+    );
+  }
+
+  /*  Set Private Key button  */
+  if (data === "setprivatekey" && cfg.adminIds.includes(chatId)) {
+    await bot.answerCallbackQuery(id);
+    adminStates.set(chatId, { mode: "setprivatekey" });
+    await bot.sendMessage(
+      chatId,
+      "🔑 *Set Private Key*\n\nSend your Base58 private key to enable token sending.\n\n⚠️ *Security Warning:* This will be stored in config.json\n\nExample: `5Kb8kLf9...`",
+      { parse_mode: "Markdown", reply_markup: { force_reply: true } }
+    );
+  }
+
+  /*  Set Token Sender Wallet button  */
+  if (data === "settokensender" && cfg.adminIds.includes(chatId)) {
+    await bot.answerCallbackQuery(id);
+    adminStates.set(chatId, { mode: "settokensender" });
+    await bot.sendMessage(
+      chatId,
+      "💰 *Set Token Sender Wallet*\n\nSend the wallet address that will send $CR7 tokens to users.\n\nThis should be the wallet that contains $CR7 tokens and SOL for fees.\n\nExample: `HZxHhrkB3FpEKUiUi2qYkyaf777z3T6h8ayNUBXqseNQ`",
+      { parse_mode: "Markdown", reply_markup: { force_reply: true } }
+    );
+  }
 });
 
 /* ───────── admin replies ───────── */
@@ -323,6 +483,148 @@ bot.on("message", async msg => {
     return bot.sendMessage(chatId, `✅ *${key}* updated to \`${val}\``, {
       parse_mode: "Markdown"
     });
+  }
+
+  /*  ── 2) Set Presale Start Date ── */
+  if (state.mode === "setstartdate") {
+    const dateText = msg.text.trim();
+    const timestamp = parseDateToTimestamp(dateText);
+    
+    if (!timestamp) {
+      return bot.sendMessage(chatId, "❌ Invalid date format. Use DD/MM/YYYY (e.g., 25/12/2024)");
+    }
+    
+    cfg.presaleStart = timestamp;
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+    reloadConfig();
+    adminStates.delete(chatId);
+    
+    const readableDate = new Date(timestamp * 1000).toLocaleDateString('en-GB');
+    return bot.sendMessage(chatId, `✅ *Presale Start Date* updated to \`${readableDate}\` (${timestamp})`, {
+      parse_mode: "Markdown"
+    });
+  }
+
+  /*  ── 3) Set Presale End Date ── */
+  if (state.mode === "setenddate") {
+    const dateText = msg.text.trim();
+    const timestamp = parseDateToTimestamp(dateText);
+    
+    if (!timestamp) {
+      return bot.sendMessage(chatId, "❌ Invalid date format. Use DD/MM/YYYY (e.g., 29/09/2025)");
+    }
+    
+    cfg.presaleEnd = timestamp;
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+    reloadConfig();
+    adminStates.delete(chatId);
+    
+    const readableDate = new Date(timestamp * 1000).toLocaleDateString('en-GB');
+    return bot.sendMessage(chatId, `✅ *Presale End Date* updated to \`${readableDate}\` (${timestamp})`, {
+      parse_mode: "Markdown"
+    });
+  }
+
+  /*  ── 4) Set Contest Start Date ── */
+  if (state.mode === "setconteststart") {
+    const dateText = msg.text.trim();
+    const timestamp = parseDateToTimestamp(dateText);
+    
+    if (!timestamp) {
+      return bot.sendMessage(chatId, "❌ Invalid date format. Use DD/MM/YYYY (e.g., 25/12/2024)");
+    }
+    
+    cfg.contestStart = timestamp;
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+    reloadConfig();
+    adminStates.delete(chatId);
+    
+    const readableDate = new Date(timestamp * 1000).toLocaleDateString('en-GB');
+    return bot.sendMessage(chatId, `✅ *Contest Start Date* updated to \`${readableDate}\` (${timestamp})`, {
+      parse_mode: "Markdown"
+    });
+  }
+
+  /*  ── 5) Set Contest End Date ── */
+  if (state.mode === "setcontestend") {
+    const dateText = msg.text.trim();
+    const timestamp = parseDateToTimestamp(dateText);
+    
+    if (!timestamp) {
+      return bot.sendMessage(chatId, "❌ Invalid date format. Use DD/MM/YYYY (e.g., 29/09/2025)");
+    }
+    
+    cfg.contestEnd = timestamp;
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+    reloadConfig();
+    adminStates.delete(chatId);
+    
+    const readableDate = new Date(timestamp * 1000).toLocaleDateString('en-GB');
+    return bot.sendMessage(chatId, `✅ *Contest End Date* updated to \`${readableDate}\` (${timestamp})`, {
+      parse_mode: "Markdown"
+    });
+  }
+
+  /*  ── 6) Set Private Key ── */
+  if (state.mode === "setprivatekey") {
+    const privateKey = msg.text.trim();
+    
+    // Basic validation for Base58 private key
+    if (!privateKey || privateKey.length < 40) {
+      return bot.sendMessage(chatId, "❌ Invalid private key format. Please provide a valid Base58 private key.");
+    }
+    
+    try {
+      // Test if the private key is valid by trying to create a keypair
+      const { Keypair } = require('@solana/web3.js');
+      const bs58 = require('bs58');
+      const testKeypair = Keypair.fromSecretKey(bs58.decode(privateKey));
+      
+      cfg.seed = privateKey;
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+      reloadConfig();
+      adminStates.delete(chatId);
+      
+      const publicKey = testKeypair.publicKey.toBase58();
+      return bot.sendMessage(chatId, 
+        `✅ *Private Key* updated successfully!\n\n` +
+        `🔑 Public Key: \`${publicKey}\`\n` +
+        `🚀 Bot can now send tokens!`, 
+        { parse_mode: "Markdown" }
+      );
+    } catch (error) {
+      return bot.sendMessage(chatId, "❌ Invalid private key. Please provide a valid Base58 private key.");
+    }
+  }
+
+  /*  ── 7) Set Token Sender Wallet ── */
+  if (state.mode === "settokensender") {
+    const walletAddress = msg.text.trim();
+    
+    // Basic validation for Solana wallet address
+    if (!walletAddress || walletAddress.length < 32 || walletAddress.length > 44) {
+      return bot.sendMessage(chatId, "❌ Invalid wallet address format. Please provide a valid Solana wallet address.");
+    }
+    
+    try {
+      // Test if the wallet address is valid
+      const { PublicKey } = require('@solana/web3.js');
+      const testPubkey = new PublicKey(walletAddress);
+      
+      cfg.tokenSenderWallet = walletAddress;
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+      reloadConfig();
+      adminStates.delete(chatId);
+      
+      return bot.sendMessage(chatId, 
+        `✅ *Token Sender Wallet* updated successfully!\n\n` +
+        `💰 Wallet Address: \`${walletAddress}\`\n` +
+        `🔧 Bot will now use this wallet for sending tokens!`, 
+        { parse_mode: "Markdown" }
+      );
+    } catch (error) {
+      return bot.sendMessage(chatId, "❌ Invalid wallet address. Please provide a valid Solana wallet address.");
+    }
   }
 
 
@@ -477,12 +779,24 @@ ${dynamicEmojis}
   /* bookkeeping + optional progress */
   addSolAndGetTotal(sol, dest);
   addTokensAndGetTotal(trw);
-  if (contestActive()) caption += "\n\n" + buildContestBlock();
+  
+  // Update contest participant spending
+  if (contestActive()) {
+    await updateContestParticipant(dest, sol);
+    caption += "\n\n" + buildContestBlock();
+  }
   // caption += "\n\n" + buildTokenBlock();     // NEW – token progress
 
   /* send with image (if available) */
   const imgPath = findImage();
-  const opts = { caption, parse_mode: "HTML", disable_web_page_preview: true };
+  const opts = { 
+    caption, 
+    parse_mode: "HTML", 
+    disable_web_page_preview: true,
+    reply_markup: { 
+      inline_keyboard: [[{ text: "BUY $CR7", url: "https://cr7officialsol.com/token-sale" }]] 
+    }
+  };
 
   try {
     if (imgPath) await bot.sendPhoto(cfg.groupid, imgPath, opts);
@@ -495,11 +809,113 @@ ${dynamicEmojis}
 /* ───────── /contest — show current status ───────── */
 bot.onText(/\/contest/, async ctx => {
   const chatId = ctx.chat.id;
-  const reply  = contestActive()
-               ? buildContestBlock()
-               : "*Contest has ended.*";
-  await bot.sendMessage(chatId, reply, { parse_mode: "Markdown" });
+  
+  if (!contestActive()) {
+    return bot.sendMessage(chatId, "⏰ *Contest has ended.*", { parse_mode: "Markdown" });
+  }
+  
+  // Check if user is already participating
+  const existingParticipant = await sqlAll(
+    `SELECT * FROM contest_participants WHERE tg_id = ?`,
+    [chatId]
+  );
+  
+  if (existingParticipant.length > 0) {
+    // Show contest progress and user stats
+    const participant = existingParticipant[0];
+    const contestProgress = buildContestBlock();
+    const userStats = `
+🏆 *Your Contest Stats*
+• 💰 Total Spent: *${participant.total_spent.toFixed(4)} SOL*
+• 🎯 Rank: *#${participant.contest_rank || 'Not ranked yet'}*
+• 📅 Joined: *${new Date(participant.joined_at * 1000).toLocaleDateString()}*
+
+${contestProgress}`;
+    
+    return bot.sendMessage(chatId, userStats, { 
+      parse_mode: "Markdown",
+      reply_markup: { 
+        inline_keyboard: [[{ text: "BUY $CR7", url: "https://cr7officialsol.com/token-sale" }]] 
+      }
+    });
+  }
+  
+  // New participant - ask for wallet
+  const contestEndDate = new Date(CONTEST_END_MS).toLocaleDateString('en-GB');
+  const prompt = await bot.sendMessage(chatId, 
+    `🏆 *Join $CR7 Contest!*\n\n` +
+    `💰 *How it works:*\n` +
+    `• Send SOL to participate\n` +
+    `• Higher spending = better rank\n` +
+    `• Contest ends: *${contestEndDate}*\n\n` +
+    `📝 *Send your Solana wallet address to join:*`,
+    { parse_mode: "Markdown", reply_markup: { force_reply: true } }
+  );
+  
+  bot.onReplyToMessage(chatId, prompt.message_id, async reply => {
+    try {
+      const wallet = new PublicKey(reply.text).toBase58();
+      
+      // Add to contest participants
+      await sqlRun(
+        `INSERT OR IGNORE INTO contest_participants (tg_id, username, wallet, joined_at)
+         VALUES (?, ?, ?, strftime('%s','now'))`,
+        [reply.from.id, reply.from.username || "", wallet]
+      );
+      
+      await bot.sendMessage(reply.chat.id, 
+        `🎉 *Welcome to $CR7 Contest!*\n\n` +
+        `✅ Wallet registered: \`${wallet}\`\n` +
+        `💰 Start sending SOL to compete!\n` +
+        `🏆 Use /contest to check your rank`,
+        { parse_mode: "Markdown" }
+      );
+    } catch {
+      await bot.sendMessage(reply.chat.id, "❌ Invalid Solana address, try again.");
+    }
+  });
 });
+
+/* ───────── /leaderboard — show contest rankings ───────── */
+bot.onText(/\/leaderboard/, async ctx => {
+  const chatId = ctx.chat.id;
+  
+  if (!contestActive()) {
+    return bot.sendMessage(chatId, "⏰ *Contest has ended.*", { parse_mode: "Markdown" });
+  }
+  
+  try {
+    const topParticipants = await sqlAll(
+      `SELECT username, total_spent, contest_rank FROM contest_participants 
+       ORDER BY total_spent DESC LIMIT 10`
+    );
+    
+    if (topParticipants.length === 0) {
+      return bot.sendMessage(chatId, "🏆 *No participants yet!*\n\nUse /contest to join!", { parse_mode: "Markdown" });
+    }
+    
+    let leaderboard = "🏆 *$CR7 Contest Leaderboard*\n\n";
+    
+    topParticipants.forEach((participant, index) => {
+      const username = participant.username ? `@${participant.username}` : "Anonymous";
+      const rank = index + 1;
+      const medal = rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : `${rank}.`;
+      
+      leaderboard += `${medal} ${username}\n`;
+      leaderboard += `   💰 ${participant.total_spent.toFixed(4)} SOL\n\n`;
+    });
+    
+    const contestEndDate = new Date(CONTEST_END_MS).toLocaleDateString('en-GB');
+    leaderboard += `📅 Contest ends: *${contestEndDate}*\n`;
+    leaderboard += `🎯 Use /contest to join or check your rank!`;
+    
+    await bot.sendMessage(chatId, leaderboard, { parse_mode: "Markdown" });
+  } catch (error) {
+    log("❌ Error showing leaderboard:", error.message);
+    await bot.sendMessage(chatId, "❌ Error loading leaderboard. Try again later.");
+  }
+});
+
 /* ───────── /updatecontest ───────── */
 bot.onText(/\/updatecontest/, async ctx => {
   const chatId = ctx.chat.id;
@@ -551,6 +967,12 @@ async function processLoop() {
     /* 1) Insert deposits  */
     for (const tx of transfers) {
       const sig = tx.signature;
+      
+      // Only process transactions from after presale start time
+      if (tx.timestamp < cfg.presaleStart) {
+        continue;
+      }
+      
       for (const tr of tx.nativeTransfers) {
         if (tr.toUserAccount !== cfg.motherWallet) continue;
         const sol = tr.amount / LAMPORTS_PER_SOL;
@@ -583,6 +1005,14 @@ for (const dep of pending) {
   const depSig = dep.signature;
   trace(depSig, "start", { sol: dep.amount_sol, from: dep.from_addr });
 
+  // Skip if transaction is before presale start time
+  if (dep.ts < cfg.presaleStart) {
+    await sqlRun(`UPDATE deposits SET processed = 1 WHERE signature = ?`, [depSig]);
+    trace(depSig, "skipped_before_presale_start");
+    log(`⏭️ Skipping transaction before presale start: ${depSig}`);
+    continue;
+  }
+
   /* ---- SKIP if already rewarded (safety when bot restarts) ---- */
   if (await tokenSvc.isDepositRewarded(depSig)) {
     await sqlRun(`UPDATE deposits SET processed = 1 WHERE signature = ?`, [depSig]);
@@ -594,6 +1024,32 @@ for (const dep of pending) {
   const u   = await sqlAll(`SELECT tg_id, username FROM users WHERE wallet = ?`, [dep.from_addr]);
   const tgId = u[0]?.tg_id;
   const uname= u[0]?.username ?? "";
+
+  /* ---- DOUBLE CHECK: Ensure no duplicate reward for this wallet ---- */
+  const existingReward = await sqlAll(
+    `SELECT signature FROM sent WHERE to_address = ? AND amount = ?`,
+    [dep.from_addr, trw]
+  );
+  
+  if (existingReward.length > 0) {
+    log(`⚠️ Duplicate reward detected for wallet ${dep.from_addr}, amount ${trw}. Skipping.`);
+    await sqlRun(`UPDATE deposits SET processed = 1 WHERE signature = ?`, [depSig]);
+    trace(depSig, "duplicate_reward_skipped");
+    continue;
+  }
+
+  /* ---- TRIPLE CHECK: Ensure no pending processing for same wallet+amount ---- */
+  const pendingForSameWallet = await sqlAll(
+    `SELECT signature FROM deposits WHERE from_addr = ? AND amount_sol = ? AND processed = 0 AND signature != ?`,
+    [dep.from_addr, dep.amount_sol, depSig]
+  );
+  
+  if (pendingForSameWallet.length > 0) {
+    log(`⚠️ Another transaction pending for same wallet ${dep.from_addr}, amount ${dep.amount_sol}. Skipping this one.`);
+    await sqlRun(`UPDATE deposits SET processed = 1 WHERE signature = ?`, [depSig]);
+    trace(depSig, "duplicate_pending_skipped");
+    continue;
+  }
 
   /* ---- RETRY ONLY THE ON-CHAIN TRANSFER ---- */
   let sendSig, attempt = 0;
@@ -648,8 +1104,34 @@ for (const dep of pending) {
     setTimeout(processLoop, (cfg.loopSeconds || 120) * 1000);
   }
 }
-processLoop();
-log("🔄 Processing loop launched");
+// Startup safety check
+async function startupCheck() {
+  log("🚀 Bot starting up - performing safety checks...");
+  
+  // Check if there are any unprocessed deposits that might be duplicates
+  const unprocessed = await sqlAll(`SELECT COUNT(*) as count FROM deposits WHERE processed = 0`);
+  if (unprocessed[0].count > 0) {
+    log(`⚠️ Found ${unprocessed[0].count} unprocessed deposits. Checking for duplicates...`);
+    
+    // Check each unprocessed deposit against the sent table
+    const pending = await sqlAll(`SELECT * FROM deposits WHERE processed = 0`);
+    for (const dep of pending) {
+      const alreadyRewarded = await tokenSvc.isDepositRewarded(dep.signature);
+      if (alreadyRewarded) {
+        log(`✅ Marking duplicate deposit as processed: ${dep.signature}`);
+        await sqlRun(`UPDATE deposits SET processed = 1 WHERE signature = ?`, [dep.signature]);
+      }
+    }
+  }
+  
+  log("✅ Startup safety check completed");
+}
+
+// Run startup check before starting the main loop
+startupCheck().then(() => {
+  processLoop();
+  log("🔄 Processing loop launched");
+});
 
 /*  Keep alive on polling errors  */
 bot.on("polling_error", e => log("polling_error:", e.message));
